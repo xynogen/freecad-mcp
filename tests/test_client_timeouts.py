@@ -45,8 +45,6 @@ def test_concurrent_execute_calls_cover_queue_and_run_time(
     [
         ("execute_code", ("pass",), 210, 150),
         ("execute_code", ("pass",), 500, 500),
-        ("run_fem_analysis", ("Doc", "Analysis", 600), 1230, 150),
-        ("run_fem_analysis", ("Doc", "Analysis", 600), 2000, 2000),
     ],
 )
 @pytest.mark.parametrize("fails", [False, True])

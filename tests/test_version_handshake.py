@@ -244,19 +244,19 @@ def test_warning_is_shown_once_in_the_next_tool_reply(monkeypatch: pytest.Monkey
         def check_addon_version(self) -> str:
             return "addon is old"
 
-        def list_documents(self) -> list[str]:
-            return ["Doc"]
+        def execute_code(self, code: str, timeout: float | None = None) -> dict:
+            return {"success": True, "message": "Doc"}
 
     monkeypatch.setattr(server, "state", ServerState())
     monkeypatch.setattr(server, "FreeCADConnection", lambda **_kwargs: Connection())
 
-    first = server.list_documents(None)
+    first = server.execute_code(None, "pass", include_screenshot=False)
     assert first[0].text == "Warning: addon is old"
-    assert json.loads(first[1].text) == ["Doc"]
+    assert first[1].text == "Code executed successfully: Doc"
 
-    second = server.list_documents(None)
+    second = server.execute_code(None, "pass", include_screenshot=False)
     assert len(second) == 1
-    assert json.loads(second[0].text) == ["Doc"]
+    assert second[0].text == "Code executed successfully: Doc"
 
 
 def test_version_is_checked_when_freecad_starts_after_the_server(
@@ -276,8 +276,8 @@ def test_version_is_checked_when_freecad_starts_after_the_server(
             checks.append("checked")
             return "addon is old"
 
-        def list_documents(self) -> list[str]:
-            return ["Doc"]
+        def execute_code(self, code: str, timeout: float | None = None) -> dict:
+            return {"success": True, "message": "Doc"}
 
         def disconnect(self) -> None:
             pass
@@ -286,13 +286,13 @@ def test_version_is_checked_when_freecad_starts_after_the_server(
     monkeypatch.setattr(server, "FreeCADConnection", lambda **_kwargs: Connection())
 
     with pytest.raises(Exception, match="Failed to connect to FreeCAD"):
-        server.list_documents(None)
+        server.execute_code(None, "pass", include_screenshot=False)
     assert server.state.freecad_connection is None
     assert checks == []
 
     freecad_running = True
-    reply = server.list_documents(None)
+    reply = server.execute_code(None, "pass", include_screenshot=False)
     assert reply[0].text == "Warning: addon is old"
-    assert json.loads(reply[1].text) == ["Doc"]
+    assert reply[1].text == "Code executed successfully: Doc"
     assert checks == ["checked"]
     assert server.state.freecad_connection is not None

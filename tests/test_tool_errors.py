@@ -1,7 +1,6 @@
 """Failed tool calls reach MCP clients with isError set."""
 
 import asyncio
-import json
 from pathlib import Path
 import sys
 from typing import Any
@@ -14,10 +13,9 @@ from mcp.types import CallToolResult
 
 from freecad_mcp import server
 from freecad_mcp.operations import (
-    create_object_operation,
     execute_code_headless_operation,
     execute_code_operation,
-    run_fem_analysis_operation,
+    get_view_operation,
 )
 from freecad_mcp.responses import ErrorResponse
 from freecad_mcp.server_state import ServerState
@@ -33,24 +31,16 @@ class _Connection:
     def check_addon_version(self) -> str:
         return self.notice
 
-    def create_object(self, _doc_name: str, obj_data: dict[str, Any]) -> dict[str, Any]:
-        if obj_data["Properties"].get("Length") == "abc":
-            return {"success": False, "error": "Failed to set property: Length: syntax error"}
-        return {"success": True, "object_name": obj_data["Name"]}
-
     def execute_code(self, code: str, _timeout: float | None = None) -> dict[str, Any]:
         if "raise" in code:
             return {"success": False, "error": "ValueError: boom"}
         return {"success": True, "message": "ok"}
 
-    def run_fem_analysis(self, *_args: Any) -> dict[str, Any]:
-        return {"success": False, "error": "no solver"}
-
-    def list_documents(self) -> list[str]:
+    def get_rpc_status(self) -> dict[str, Any]:
         raise ConnectionError("RPC unavailable")
 
-    def get_active_screenshot(self, *_args: Any) -> str:
-        return "cG5n"
+    def get_active_screenshot(self, view_name: str = "Isometric", *_args: Any) -> str | None:
+        return None if view_name == "Bottom" else "cG5n"
 
     def disconnect(self) -> None:
         pass
@@ -82,25 +72,21 @@ def test_failed_tool_call_is_flagged(connected) -> None:
 def test_successful_tool_call_is_not_flagged(connected) -> None:
     connected()
 
-    result = server.create_object(
-        None, "Doc", "Part::Box", "Box", obj_properties={"Length": 5}, include_screenshot=False
-    )
+    result = server.execute_code(None, "x = 1", include_screenshot=False)
 
     assert not _error(result)
-    assert result[0].text == "Object 'Box' created successfully"
+    assert result[0].text == "Code executed successfully: ok"
 
 
 def test_version_warning_is_kept_on_a_failed_call(connected) -> None:
     connected(notice="addon is old")
 
-    result = server.create_object(
-        None, "Doc", "Part::Box", "Bad", obj_properties={"Length": "abc"}, include_screenshot=False
-    )
+    result = server.execute_code(None, "raise ValueError('boom')", include_screenshot=False)
 
     assert _error(result)
     assert [c.text for c in result.content] == [
         "Warning: addon is old",
-        "Failed to create object: Failed to set property: Length: syntax error",
+        "Failed to execute code: ValueError: boom",
     ]
 
 
@@ -109,14 +95,8 @@ def test_operations_mark_failures() -> None:
 
     assert isinstance(execute_code_operation(conn, True, "raise X"), ErrorResponse)
     assert not isinstance(execute_code_operation(conn, True, "pass"), ErrorResponse)
-    assert isinstance(
-        create_object_operation(conn, True, "Doc", "Part::Box", "B", None, {"Length": "abc"}),
-        ErrorResponse,
-    )
-
-    fem = run_fem_analysis_operation(conn, True, "Doc", "Analysis")
-    assert isinstance(fem, ErrorResponse)
-    assert json.loads(fem[0].text)["summary"] == "FEM analysis 'Analysis' failed: no solver"
+    assert isinstance(get_view_operation(conn, "Bottom"), ErrorResponse)
+    assert not isinstance(get_view_operation(conn, "Top"), ErrorResponse)
 
 
 def test_failed_headless_run_is_marked(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -147,28 +127,19 @@ def test_stdio_client_receives_error_flags_and_original_content() -> None:
                         "Warning: addon is old",
                         "Failed to execute code: ValueError: boom",
                     ]
-                    invalid = await session.call_tool("create_object", {
-                        "doc_name": "Doc", "obj_type": "Part::Box", "obj_name": "Bad",
-                        "obj_properties": {"Length": "abc"}, "include_screenshot": False,
-                    })
-                    assert _error(invalid)
-                    assert len(invalid.content) == 1  # The version notice is sent once.
-                    assert "Failed to set property: Length" in invalid.content[0].text
-                    fem = await session.call_tool(
-                        "run_fem_analysis", {"doc_name": "Doc", "analysis_name": "Analysis"}
+                    again = await session.call_tool(
+                        "execute_code", {"code": "raise ValueError('boom')", "include_screenshot": False}
                     )
-                    assert _error(fem)
-                    assert json.loads(fem.content[0].text)["error"] == "no solver"
-                    transport = await session.call_tool("list_documents", {})
-                    assert _error(transport)
-                    # SDK 2.x hides details of unexpected exceptions.
-                    assert "list_documents" in transport.content[0].text
-                    success = await session.call_tool("create_object", {
-                        "doc_name": "Doc", "obj_type": "Part::Box", "obj_name": "Box",
-                        "obj_properties": {"Length": 5},
-                    })
+                    assert _error(again)
+                    assert len(again.content) == 1  # The version notice is sent once.
+                    no_view = await session.call_tool("get_view", {"view_name": "Bottom"})
+                    assert _error(no_view)
+                    status = await session.call_tool("get_rpc_status", {})
+                    assert _error(status)
+                    assert "RPC unavailable" in status.content[0].text
+                    success = await session.call_tool("execute_code", {"code": "x = 1"})
                     assert not _error(success)
-                    assert success.content[0].text == "Object 'Box' created successfully"
+                    assert success.content[0].text == "Code executed successfully: ok"
                     assert success.content[1].type == "image"
                     assert success.content[1].data == "cG5n"
 

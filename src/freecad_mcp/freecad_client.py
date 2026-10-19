@@ -111,24 +111,6 @@ class FreeCADConnection:
                 setattr(self, attr, value)
         return addon_version_warning(status)
 
-    def create_document(self, name: str) -> dict[str, Any]:
-        return self._call("create_document", name)
-
-    def create_object(self, doc_name: str, obj_data: dict[str, Any]) -> dict[str, Any]:
-        return self._call("create_object", doc_name, obj_data)
-
-    def edit_object(self, doc_name: str, obj_name: str, obj_data: dict[str, Any]) -> dict[str, Any]:
-        return self._call("edit_object", doc_name, obj_name, obj_data)
-
-    def delete_object(self, doc_name: str, obj_name: str) -> dict[str, Any]:
-        return self._call("delete_object", doc_name, obj_name)
-
-    def reload_document(self, doc_name: str) -> dict[str, Any]:
-        return self._call("reload_document", doc_name)
-
-    def insert_part_from_library(self, relative_path: str) -> dict[str, Any]:
-        return self._call("insert_part_from_library", relative_path)
-
     def execute_code(self, code: str, timeout: float | None = None) -> dict[str, Any]:
         # The addon permits a full queue budget followed by a full run budget.
         # Both default to EXECUTE_CODE_TIMEOUT, or to the caller's per-call
@@ -151,14 +133,6 @@ class FreeCADConnection:
                 return proxy.execute_code(code)
             return proxy.execute_code(code, run_budget)
 
-    def execute_code_async(self, code: str) -> dict[str, Any]:
-        return self._call("execute_code_async", code)
-
-    def get_async_status(self, job_id: str = "") -> dict[str, Any]:
-        # Polling must not share an HTTP connection with a blocked GUI request.
-        with self._make_proxy(self._timeout) as proxy:
-            return proxy.get_async_status(job_id)
-
     def get_active_screenshot(
         self,
         view_name: str = "Isometric",
@@ -171,21 +145,3 @@ class FreeCADConnection:
         except Exception as e:
             logger.error(f"Error getting screenshot: {e}")
             return None
-
-    def get_objects(self, doc_name: str) -> list[dict[str, Any]]:
-        return self._call("get_objects", doc_name)
-
-    def get_object(self, doc_name: str, obj_name: str) -> dict[str, Any]:
-        return self._call("get_object", doc_name, obj_name)
-
-    def get_parts_list(self) -> list[str]:
-        return self._call("get_parts_list")
-
-    def list_documents(self) -> list[str]:
-        return self._call("list_documents")
-
-    def run_fem_analysis(self, doc_name: str, analysis_name: str, timeout: int = 600) -> dict[str, Any]:
-        # Both queueing and solving can consume `timeout` seconds each.
-        socket_timeout = max(self._timeout, 2 * timeout + self.RPC_TIMEOUT_MARGIN)
-        with self._make_proxy(socket_timeout) as proxy:
-            return proxy.run_fem_analysis(doc_name, analysis_name, timeout)

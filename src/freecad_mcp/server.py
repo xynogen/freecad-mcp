@@ -16,25 +16,12 @@ from mcp.types import CallToolResult, ImageContent, TextContent
 
 from .freecad_client import FreeCADConnection
 from .operations import (
-    create_document_operation,
-    create_object_operation,
-    delete_object_operation,
-    edit_object_operation,
-    execute_code_async_operation,
     execute_code_headless_operation,
     execute_code_operation,
-    get_object_operation,
-    get_objects_operation,
-    get_parts_list_operation,
-    get_async_status_operation,
     get_rpc_status_operation,
     get_view_operation,
-    insert_part_from_library_operation,
-    list_documents_operation,
-    reload_document_operation,
-    run_fem_analysis_operation,
 )
-from .prompt_text import ASSET_CREATION_STRATEGY
+from .prompt_text import INSTRUCTIONS
 from .responses import ErrorResponse, ToolResponse
 from .server_state import ServerState
 
@@ -75,7 +62,7 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict[str, Any]]:
 
 mcp = FastMCP(
     "FreeCADMCP",
-    instructions="FreeCAD integration through the Model Context Protocol",
+    instructions=INSTRUCTIONS,
     lifespan=server_lifespan,
 )
 
@@ -139,344 +126,6 @@ def get_freecad_connection() -> FreeCADConnection:
 
 
 @tool
-def create_document(ctx: Context, name: str) -> list[TextContent]:
-    """Create a new document in FreeCAD.
-
-    Args:
-        name: The name of the document to create.
-
-    Returns:
-        A message indicating the success or failure of the document creation.
-
-    Examples:
-        If you want to create a document named "MyDocument", you can use the following data.
-        ```json
-        {
-            "name": "MyDocument"
-        }
-        ```
-    """
-    return create_document_operation(get_freecad_connection(), name)
-
-
-@tool
-def create_object(
-    ctx: Context,
-    doc_name: str,
-    obj_type: str,
-    obj_name: str,
-    analysis_name: str | None = None,
-    obj_properties: dict[str, Any] = None,
-    include_screenshot: bool = True,
-    view_name: ViewName = "Isometric",
-) -> list[TextContent | ImageContent]:
-    """Create a new object in FreeCAD.
-
-    ``obj_type`` must name a type registered in FreeCAD's C++ type system, such
-    as "Part::", "PartDesign::" or "Fem::" types. A number of FreeCAD features
-    are implemented in Python rather than C++ and so are not registered types;
-    of those, these are supported here through dedicated factories, and each
-    requires the properties listed beside it:
-
-        Part::Tube        InnerRadius, OuterRadius, Height
-        Draft::Circle     Radius
-        Draft::Rectangle  Length, Height
-        Draft::Polygon    FacesNumber, Radius
-        Draft::Wire       Points (list of {x, y, z}), optional Closed
-
-    Any other Python-implemented type (Draft::Point, Draft::Ellipse, ...) must
-    be built with ``execute_code`` instead.
-
-    Note that the Draft factories name objects themselves, so for those the
-    returned object_name will differ from the requested obj_name, which is
-    applied to the object's Label instead. Always use the returned name in
-    later get_object/edit_object calls.
-
-    Args:
-        doc_name: The name of the document to create the object in.
-        obj_type: The type of the object to create (e.g. 'Part::Box', 'Part::Cylinder', 'Part::Cut', 'PartDesign::Body', etc.).
-        obj_name: The name of the object to create.
-        obj_properties: The properties of the object to create.
-        include_screenshot: Whether to return a screenshot of the model (default True).
-            Set to False to save tokens when visual feedback is not needed,
-            e.g. for intermediate steps in a longer sequence of changes.
-        view_name: The view orientation of the returned screenshot (default "Isometric").
-            Pick the view that best shows the change being made.
-
-    Returns:
-        A message indicating the success or failure of the object creation and a screenshot of the object.
-
-    Examples:
-        If you want to create a cylinder with a height of 30 and a radius of 10, you can use the following data.
-        ```json
-        {
-            "doc_name": "MyCylinder",
-            "obj_name": "Cylinder",
-            "obj_type": "Part::Cylinder",
-            "obj_properties": {
-                "Height": 30,
-                "Radius": 10,
-                "Placement": {
-                    "Base": {
-                        "x": 10,
-                        "y": 10,
-                        "z": 0
-                    },
-                    "Rotation": {
-                        "Axis": {
-                            "x": 0,
-                            "y": 0,
-                            "z": 1
-                        },
-                        "Angle": 45
-                    }
-                },
-                "ViewObject": {
-                    "ShapeColor": [0.5, 0.5, 0.5, 1.0]
-                }
-            }
-        }
-        ```
-
-        If you want to cut one solid out of another, create both solids first,
-        then reference them by name as 'Base' and 'Tool'.
-        ```json
-        {
-            "doc_name": "MyPart",
-            "obj_name": "Cut",
-            "obj_type": "Part::Cut",
-            "obj_properties": {
-                "Base": "Box",
-                "Tool": "Cylinder"
-            }
-        }
-        ```
-
-        If you want to create a pipe with an outer diameter of 250, a 10 wall
-        and a length of 500, you can use the following data.
-        ```json
-        {
-            "doc_name": "MyPipe",
-            "obj_name": "Pipe",
-            "obj_type": "Part::Tube",
-            "obj_properties": {
-                "OuterRadius": 125,
-                "InnerRadius": 115,
-                "Height": 500
-            }
-        }
-        ```
-
-        If you want to create a FEM analysis, you can use the following data.
-        ```json
-        {
-            "doc_name": "MyFEMAnalysis",
-            "obj_name": "FemAnalysis",
-            "obj_type": "Fem::AnalysisPython",
-        }
-        ```
-
-        If you want to create a FEM constraint, you can use the following data.
-        ```json
-        {
-            "doc_name": "MyFEMConstraint",
-            "obj_name": "FemConstraint",
-            "obj_type": "Fem::ConstraintFixed",
-            "analysis_name": "MyFEMAnalysis",
-            "obj_properties": {
-                "References": [
-                    {
-                        "object_name": "MyObject",
-                        "face": "Face1"
-                    }
-                ]
-            }
-        }
-        ```
-
-        If you want to create a FEM mechanical material, you can use the following data.
-        ```json
-        {
-            "doc_name": "MyFEMAnalysis",
-            "obj_name": "FemMechanicalMaterial",
-            "obj_type": "Fem::MaterialCommon",
-            "analysis_name": "MyFEMAnalysis",
-            "obj_properties": {
-                "Material": {
-                    "Name": "MyMaterial",
-                    "Density": "7900 kg/m^3",
-                    "YoungModulus": "210 GPa",
-                    "PoissonRatio": 0.3
-                }
-            }
-        }
-        ```
-
-        If you want to create a FEM mesh, you can use the following data.
-        The `Shape` property is required (legacy `Part` is also accepted).
-        On FreeCAD 1.x the size limits are `CharacteristicLengthMax/Min`;
-        the legacy `ElementSizeMax/Min` keys are also accepted.
-        ```json
-        {
-            "doc_name": "MyFEMMesh",
-            "obj_name": "FemMesh",
-            "obj_type": "Fem::FemMeshGmsh",
-            "analysis_name": "MyFEMAnalysis",
-            "obj_properties": {
-                "Shape": "MyObject",
-                "CharacteristicLengthMax": 10,
-                "CharacteristicLengthMin": 0.1
-            }
-        }
-        ```
-    """
-    return create_object_operation(
-        get_freecad_connection(),
-        state.only_text_feedback,
-        doc_name,
-        obj_type,
-        obj_name,
-        analysis_name,
-        obj_properties,
-        include_screenshot,
-        view_name,
-    )
-
-
-@tool
-def edit_object(
-    ctx: Context,
-    doc_name: str,
-    obj_name: str,
-    obj_properties: dict[str, Any],
-    include_screenshot: bool = True,
-    view_name: ViewName = "Isometric",
-) -> list[TextContent | ImageContent]:
-    """Edit an object in FreeCAD.
-    This tool is used when the `create_object` tool cannot handle the object creation.
-
-    Args:
-        doc_name: The name of the document to edit the object in.
-        obj_name: The name of the object to edit.
-        obj_properties: The properties of the object to edit.
-        include_screenshot: Whether to return a screenshot of the model (default True).
-            Set to False to save tokens when visual feedback is not needed,
-            e.g. for intermediate steps in a longer sequence of changes.
-        view_name: The view orientation of the returned screenshot (default "Isometric").
-            Pick the view that best shows the change being made.
-
-    Returns:
-        A message indicating the success or failure of the object editing and a screenshot of the object.
-    """
-    return edit_object_operation(
-        get_freecad_connection(),
-        state.only_text_feedback,
-        doc_name,
-        obj_name,
-        obj_properties,
-        include_screenshot,
-        view_name,
-    )
-
-
-@tool
-def delete_object(
-    ctx: Context,
-    doc_name: str,
-    obj_name: str,
-    include_screenshot: bool = True,
-    view_name: ViewName = "Isometric",
-) -> list[TextContent | ImageContent]:
-    """Delete an object in FreeCAD.
-
-    Args:
-        doc_name: The name of the document to delete the object from.
-        obj_name: The name of the object to delete.
-        include_screenshot: Whether to return a screenshot of the model (default True).
-            Set to False to save tokens when visual feedback is not needed,
-            e.g. for intermediate steps in a longer sequence of changes.
-        view_name: The view orientation of the returned screenshot (default "Isometric").
-            Pick the view that best shows the change being made.
-
-    Returns:
-        A message indicating the success or failure of the object deletion and a screenshot of the object.
-    """
-    return delete_object_operation(
-        get_freecad_connection(),
-        state.only_text_feedback,
-        doc_name,
-        obj_name,
-        include_screenshot,
-        view_name,
-    )
-
-
-@tool
-def execute_code_async(ctx: Context, code: str) -> list[TextContent]:
-    """Execute Python code in FreeCAD without waiting for completion.
-
-    Use this ONLY for long-running background computations that do NOT touch the
-    FreeCAD GUI or mutate the FreeCAD document tree directly.
-
-    This tool runs the submitted code in a background thread and returns
-    immediately. Because it does not run on FreeCAD's main GUI thread, the code
-    must NOT directly call FreeCADGui APIs, manipulate the active view or
-    selection, create or edit document objects, change object properties, call
-    doc.recompute(), or save documents. FreeCAD documents and the Coin3D
-    scenegraph are not thread-safe: writing to them from this thread races the
-    GUI thread and can wedge FreeCAD's event loop, after which the RPC server
-    stops responding entirely and FreeCAD must be restarted.
-
-    Every document or view write must instead be handed to the GUI thread through
-    the injected commit() helper:
-
-        commit(fn, timeout=120) -> fn's return value
-
-    Scripts share a live namespace. Saved functions can use commit() in later
-    async calls; calling it from execute_code or a GUI callback raises immediately.
-    Coordinate concurrent scripts that intentionally modify the same variables.
-
-    commit() queues fn on the GUI thread, waits for it, and raises RuntimeError if
-    dispatch fails or times out. Example:
-
-        fused = base.fuse(addition).removeSplitter()   # slow, safe in background
-
-        def apply():                                   # runs on the GUI thread
-            obj.Shape = fused
-            doc.recompute()
-
-        commit(apply)
-
-    For code that is not dominated by heavy geometry computation, use execute_code
-    instead. execute_code runs entirely on the FreeCAD GUI thread and is the safe
-    default for normal FreeCAD automation.
-
-    Use execute_code_async only when the heavy part is long-running OCCT geometry
-    (e.g. fuse/cut/loft on already-fetched shapes) or other CPU-bound computation
-    that would exceed execute_code's 90 s GUI-thread budget.
-
-    Typical usage pattern:
-    1. Fetch shapes into module-level variables first (via execute_code).
-    2. Run the heavy computation via execute_code_async.
-    3. Apply the result inside commit(), or store it in a module-level Python
-       variable (not in the FreeCAD document) for a later execute_code call.
-
-    Performance note: boolean operations against shapes with many faces (e.g. a
-    ribbed lid) are expensive. Fuse the additions together first, then apply a
-    single boolean against the heavy shape, and avoid doc.recompute() unless the
-    dependency graph really needs it.
-
-    Args:
-        code: Background-safe Python code to execute. Use commit(fn) for all
-            document and view writes.
-
-    Returns:
-        A message with the job_id of the started background execution.
-    """
-    return execute_code_async_operation(get_freecad_connection(), code)
-
-
-@tool
 def execute_code_headless(ctx: Context, code: str, timeout: float = 600) -> list[TextContent]:
     """Run a FreeCAD Python script in a separate headless `freecadcmd` process.
 
@@ -491,8 +140,8 @@ def execute_code_headless(ctx: Context, code: str, timeout: float = 600) -> list
     yourself, open documents from disk (FreeCAD.openDocument(path)), save
     results with doc.save()/saveAs() or Shape.exportBrep(). Nothing from the
     execute_code namespace is available. Print progress to stdout; it is
-    returned when the process ends. After the script saved a .FCStd that is
-    open in the GUI, call reload_document(doc_name) to show the result.
+    returned when the process ends. To show a saved .FCStd that is open in
+    the GUI, execute_code: App.closeDocument(name); App.openDocument(path).
 
     Args:
         code: Complete Python script for freecadcmd.
@@ -506,23 +155,6 @@ def execute_code_headless(ctx: Context, code: str, timeout: float = 600) -> list
 
 
 @tool
-def get_async_status(ctx: Context, job_id: str = "") -> list[TextContent]:
-    """Report the state of background jobs started by execute_code_async.
-
-    Does not use the FreeCAD GUI thread, so it answers even while a job runs.
-
-    Args:
-        job_id: The id returned by execute_code_async. Empty lists all running
-            jobs and up to 20 recently completed jobs.
-
-    Returns:
-        For one job: its state (running/done/failed), the error and traceback
-        when it failed. History is held in memory until FreeCAD exits.
-    """
-    return get_async_status_operation(get_freecad_connection(), job_id)
-
-
-@tool
 def execute_code(
     ctx: Context,
     code: str,
@@ -530,27 +162,47 @@ def execute_code(
     view_name: ViewName = "Isometric",
     timeout: float | None = None,
 ) -> list[TextContent | ImageContent]:
-    """Execute arbitrary Python code in FreeCAD.
+    """Run Python in the FreeCAD GUI. This is THE modelling tool.
+
+    Model like a CAD user: Body -> sketch on a plane or face -> fully
+    constrain it -> Pad/Pocket/Revolution -> next sketch. Never build parts
+    from Part primitives or raw solids. One call per feature or small group
+    of features; read the error, fix, continue.
+
+    Preloaded (FreeCAD/App, FreeCADGui/Gui, Part, Sketcher, V=App.Vector,
+    C=Sketcher.Constraint). Restore with `from rpc_server.cad import *`:
+        body(name="Body") -> PartDesign::Body in the active document
+        sketch(body, on="XY"|"XZ"|"YZ"|(feature, "FaceN"), offset=0, name="Sketch")
+        rect(sk, w, h, x=0, y=0)  -> line ids; centred, fully constrained
+        circle(sk, d, x=0, y=0)   -> geometry id; fully constrained
+        check(sk)  -> raises unless DoF == 0 with no conflicting/redundant
+                      constraints; the error lists the free geometry ids
+        pad(sk, length, reversed=False, symmetric=False, name="Pad")
+        pocket(sk, depth=None (through all), reversed=False, name="Pocket")
+        revolve(sk, angle=360, axis="V_Axis"|"H_Axis", name="Revolution")
+    pad/pocket/revolve call check() first, and remove a feature that fails
+    to recompute and raise its error.
+
+    Other profiles: sk.addGeometry(Part.LineSegment/Circle/ArcOfCircle(...))
+    then sk.addConstraint([C("Coincident", g1, 2, g2, 1), C("Horizontal", g),
+    C("DistanceX", -1, 1, g, 1, x), C("Radius", g, r), ...]) until check()
+    passes. Point ids: 1 start, 2 end, 3 centre; geometry -1 = H axis (its
+    point 1 is the sketch origin), -2 = V axis. Faces of a feature: inspect
+    f.Shape.Faces[i].Surface / CenterOfMass, name is f"Face{i+1}".
+    Fillet/Chamfer: b.newObject("PartDesign::Fillet", n) with
+    Base = (feature, ["Edge1", ...]) and Radius, then recompute.
+
+    print() output is returned; state persists between calls. Inspect with
+    App.ActiveDocument.Objects, obj.Shape.Volume/BoundBox, obj.isValid().
 
     Args:
-        code: The Python code to execute.
-        include_screenshot: Whether to return a screenshot of the model (default True).
-            Set to False to save tokens when the code does not change the model's
-            appearance, e.g. analytical or computational scripts whose result is
-            printed output, or intermediate steps in a longer sequence of changes.
-        view_name: The view orientation of the returned screenshot (default "Isometric").
-            Pick the view that best shows the change being made.
-        timeout: Positive finite seconds for each of the queue and GUI execution
-            budgets, overriding the 90 s default for this call (capped at 1800).
-            Raise it for slow work that must
-            run on the GUI thread, such as importing or exporting a large STEP
-            assembly. Without it the call reports a timeout while the task keeps
-            running, and the result is lost even though the work finishes. Prefer
-            execute_code_async for heavy pure-geometry work that touches neither
-            the document nor the GUI.
-
-    Returns:
-        A message indicating the success or failure of the code execution, the output of the code execution, and a screenshot of the object.
+        code: Python to run.
+        include_screenshot: Return a screenshot (default True). Pass False
+            for intermediate steps and queries; use get_view at the end.
+        view_name: Screenshot orientation (default "Isometric").
+        timeout: Seconds for each of the queue and run budgets (default 90,
+            max 1800). Raise it for slow GUI work such as big STEP imports.
+            Use execute_code_headless for OCCT work that may crash.
     """
     return execute_code_operation(
         get_freecad_connection(),
@@ -595,140 +247,6 @@ def get_view(
 
 
 @tool
-def insert_part_from_library(
-    ctx: Context,
-    relative_path: str,
-    include_screenshot: bool = True,
-    view_name: ViewName = "Isometric",
-) -> list[TextContent | ImageContent]:
-    """Insert a part from the parts library addon.
-
-    Args:
-        relative_path: The relative path of the part to insert.
-        include_screenshot: Whether to return a screenshot of the model (default True).
-            Set to False to save tokens when visual feedback is not needed,
-            e.g. for intermediate steps in a longer sequence of changes.
-        view_name: The view orientation of the returned screenshot (default "Isometric").
-            Pick the view that best shows the change being made.
-
-    Returns:
-        A message indicating the success or failure of the part insertion and a screenshot of the object.
-    """
-    return insert_part_from_library_operation(
-        get_freecad_connection(),
-        state.only_text_feedback,
-        relative_path,
-        include_screenshot,
-        view_name,
-    )
-
-
-@tool
-def get_objects(
-    ctx: Context,
-    doc_name: str,
-    include_screenshot: bool = True,
-    view_name: ViewName = "Isometric",
-) -> list[TextContent | ImageContent]:
-    """Get all objects in a document.
-    You can use this tool to get the objects in a document to see what you can check or edit.
-
-    Args:
-        doc_name: The name of the document to get the objects from.
-        include_screenshot: Whether to return a screenshot of the document (default True).
-            Set to False to save tokens when only the object data is needed.
-        view_name: The view orientation of the returned screenshot (default "Isometric").
-
-    Returns:
-        A list of objects in the document and a screenshot of the document.
-    """
-    return get_objects_operation(
-        get_freecad_connection(),
-        state.only_text_feedback,
-        doc_name,
-        include_screenshot,
-        view_name,
-    )
-
-
-@tool
-def get_object(
-    ctx: Context,
-    doc_name: str,
-    obj_name: str,
-    include_screenshot: bool = True,
-    view_name: ViewName = "Isometric",
-) -> list[TextContent | ImageContent]:
-    """Get an object from a document.
-    You can use this tool to get the properties of an object to see what you can check or edit.
-
-    Args:
-        doc_name: The name of the document to get the object from.
-        obj_name: The name of the object to get.
-        include_screenshot: Whether to return a screenshot of the document (default True).
-            Set to False to save tokens when only the object data is needed.
-        view_name: The view orientation of the returned screenshot (default "Isometric").
-
-    Returns:
-        The object and a screenshot of the object.
-    """
-    return get_object_operation(
-        get_freecad_connection(),
-        state.only_text_feedback,
-        doc_name,
-        obj_name,
-        include_screenshot,
-        view_name,
-    )
-
-
-@tool
-def get_parts_list(ctx: Context) -> list[TextContent]:
-    """Get the list of parts in the parts library addon.
-    """
-    return get_parts_list_operation(get_freecad_connection())
-
-
-@tool
-def reload_document(ctx: Context, doc_name: str) -> list[TextContent]:
-    """Close and re-open a document to pick up external file changes.
-
-    Use this AFTER the document's .FCStd file has been modified by
-    something outside of FreeCAD's GUI process — for example, a
-    headless `freecadcmd` script that edited and saved the file. The
-    open GUI document is otherwise unaware of on-disk changes; this
-    tool closes the stale in-memory copy and reopens the file from
-    disk so the GUI shows current geometry.
-
-    Args:
-        doc_name: The name of the open document to reload. Must match
-            the name shown by ``list_documents``.
-
-    Returns:
-        A message confirming the document was reloaded, or describing
-        the failure (document not loaded, no associated file, etc).
-
-    Examples:
-        ```json
-        {
-            "doc_name": "chassis"
-        }
-        ```
-    """
-    return reload_document_operation(get_freecad_connection(), doc_name)
-
-
-@tool
-def list_documents(ctx: Context) -> list[TextContent]:
-    """Get the list of open documents in FreeCAD.
-
-    Returns:
-        A list of document names.
-    """
-    return list_documents_operation(get_freecad_connection())
-
-
-@tool
 def get_rpc_status(ctx: Context) -> list[TextContent]:
     """Get RPC and FreeCAD GUI-dispatch health.
 
@@ -739,62 +257,6 @@ def get_rpc_status(ctx: Context) -> list[TextContent]:
     updating.
     """
     return get_rpc_status_operation(get_freecad_connection())
-
-
-@tool
-def run_fem_analysis(
-    ctx: Context,
-    doc_name: str,
-    analysis_name: str,
-    timeout: int = 600,
-    include_screenshot: bool = True,
-    view_name: ViewName = "Isometric",
-) -> list[TextContent | ImageContent]:
-    """Run the CalculiX solver on an existing Fem::FemAnalysis container and return summary results.
-
-    Prerequisites in the document:
-    - A Part-derived solid (e.g. Part::Box, PartDesign::Body) acting as the geometry.
-    - A Fem::AnalysisPython container created via `create_object`.
-    - A Fem::MaterialCommon assigned to the geometry, added to the analysis.
-    - A Fem::FemMeshGmsh referencing the geometry, added to the analysis (the
-      mesh is generated automatically when created via `create_object`).
-    - At least one Fem::ConstraintFixed and one Fem::ConstraintForce (or
-      ConstraintPressure) bound to faces of the geometry, added to the analysis.
-
-    A SolverCcxTools is auto-created if the analysis has none.
-
-    The solver runs synchronously on the FreeCAD GUI thread and blocks all
-    other RPC calls for its duration; do not fan out parallel requests.
-
-    Returns max von Mises stress (MPa), max/min displacement (mm), node count,
-    and the working directory CalculiX wrote to. On failure, returns the
-    prerequisite-check or solver error along with the working directory for
-    triage.
-
-    Args:
-        doc_name: Name of the FreeCAD document.
-        analysis_name: Name of the Fem::AnalysisPython object.
-        timeout: Seconds to wait for the solver (default 600).
-        include_screenshot: Whether to return a screenshot of the model (default True).
-            Set to False to save tokens when only the numeric results are needed.
-        view_name: The view orientation of the returned screenshot (default "Isometric").
-    """
-    return run_fem_analysis_operation(
-        get_freecad_connection(),
-        state.only_text_feedback,
-        doc_name,
-        analysis_name,
-        timeout,
-        include_screenshot,
-        view_name,
-    )
-
-
-@mcp.prompt()
-def asset_creation_strategy() -> str:
-    return ASSET_CREATION_STRATEGY
-
-
 def _validate_host(value: str) -> str:
     """Validate that *value* is a valid IP address or hostname.
 

@@ -1,39 +1,27 @@
-ASSET_CREATION_STRATEGY = """
-Asset Creation Strategy for FreeCAD MCP
+INSTRUCTIONS = """
+FreeCAD over MCP. Model parts the way a CAD user does, with execute_code.
 
-When creating content in FreeCAD, always follow these steps:
+Workflow for every part:
+1. Read the request; pick the base plane and the first profile.
+2. b = body("Name"); sk = sketch(b, "XY"); draw the profile with rect/circle
+   or addGeometry + addConstraint.
+3. check(sk) must pass: zero degrees of freedom, no conflicting or redundant
+   constraints. Dimension every length, radius and position from the origin
+   or other geometry. Never leave a sketch under-constrained.
+4. pad / pocket / revolve the sketch. They refuse an unconstrained sketch.
+5. Next feature: sketch on an origin plane with an offset, or on a face of
+   the last feature (sketch(b, (feat, "Face6"))). Repeat 2-4.
+6. Finish with fillets/chamfers, then verify: obj.isValid(),
+   b.Shape.Volume, b.Shape.BoundBox. Look with get_view.
 
-0. Before starting any task, always use get_objects() to confirm the current state of the document.
+Rules:
+- No Part::Box/Cylinder primitives or raw Part solids for parts; use sketches.
+- One feature (or a few) per execute_code call. On error, read the message,
+  fix that step, and continue; do not rebuild everything.
+- include_screenshot=False for intermediate steps; get_view at the end.
+- Ask before guessing dimensions the user did not give.
+- execute_code_headless for OCCT work that may crash FreeCAD.
+- get_rpc_status when FreeCAD stops answering.
 
-1. Utilize the parts library:
-   - Check available parts using get_parts_list().
-   - If the required part exists in the library, use insert_part_from_library() to insert it into your document.
-
-2. If the appropriate asset is not available in the parts library:
-   - Create basic shapes (e.g., cubes, cylinders, spheres) using create_object().
-   - Adjust and define detailed properties of the shapes as necessary using edit_object().
-
-3. Always assign clear and descriptive names to objects when adding them to the document.
-
-4. Explicitly set the position, scale, and rotation properties of created or inserted objects using edit_object() to ensure proper spatial relationships.
-
-5. After editing an object, always verify that the set properties have been correctly applied by using get_object().
-
-6. If detailed customization or specialized operations are necessary, use execute_code() to run custom Python scripts.
-
-7. Manage screenshot feedback to save tokens. Tools that modify or inspect the
-   model accept optional `include_screenshot` and `view_name` parameters:
-   - Pass include_screenshot=False when the image would not be informative:
-     analytical or computational scripts whose result is printed output,
-     bulk property edits, or intermediate steps in a longer sequence of
-     changes where only the final state needs visual confirmation.
-   - Pass view_name (e.g. "Front", "Top", "Right") to orient the screenshot
-     toward the part of the model you changed; the default is "Isometric" (top-front-right).
-   - When you skipped screenshots during intermediate steps, use get_view()
-     afterwards to visually inspect the result from the most informative angle.
-
-Only revert to basic creation methods in the following cases:
-- When the required asset is not available in the parts library.
-- When a basic shape is explicitly requested.
-- When creating complex shapes requires custom scripting.
+The execute_code description lists the preloaded helpers and Sketcher API.
 """

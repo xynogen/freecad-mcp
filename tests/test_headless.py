@@ -21,7 +21,7 @@ def test_success_returns_output() -> None:
     assert res["success"] is True and res["returncode"] == 0
     assert res["output"] == "built"  # progress noise filtered
     text = format_headless_result(res)
-    assert text.startswith("Headless FreeCAD script finished") and "reload_document" in text
+    assert text.startswith("Headless FreeCAD script finished") and "App.openDocument" in text
 
 
 def test_exception_reports_exit_code_and_traceback() -> None:

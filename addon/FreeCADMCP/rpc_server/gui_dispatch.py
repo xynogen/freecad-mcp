@@ -331,8 +331,7 @@ def dispatch_to_gui(
             busy_for = time.monotonic() - _processing_since
             hint = (
                 f" (GUI thread has been busy for {busy_for:.1f}s — for heavy OCCT"
-                " geometry consider execute_code_async, which must apply document"
-                " writes through its commit() helper)"
+                " geometry raise the execute_code timeout or use execute_code_headless)"
             )
         elif last_defer is not None and last_defer[1] >= queued_at:
             # Never silently time out on a guard: name it so the next wedge
