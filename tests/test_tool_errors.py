@@ -105,13 +105,13 @@ def test_failed_headless_run_is_marked(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         headless, "run_headless", lambda *_args: {"success": False, "error": "exit 1"}
     )
-    assert isinstance(execute_code_headless_operation(None, "", 10), ErrorResponse)
+    assert isinstance(execute_code_headless_operation(None, "pass", 10), ErrorResponse)
 
     monkeypatch.setattr(headless, "run_headless", lambda *_args: {"success": True})
-    assert not isinstance(execute_code_headless_operation(None, "", 10), ErrorResponse)
+    assert not isinstance(execute_code_headless_operation(None, "pass", 10), ErrorResponse)
 
 
-def test_stdio_client_receives_error_flags_and_original_content() -> None:
+def test_stdio_client_receives_error_flags_and_original_content(tmp_path: Path) -> None:
     """Exercise SDK serialization, including MCP 1.x and 2.x normalization."""
     async def exercise() -> None:
         params = StdioServerParameters(command=sys.executable, args=[str(Path(__file__))])
@@ -142,12 +142,120 @@ def test_stdio_client_receives_error_flags_and_original_content() -> None:
                     assert success.content[0].text == "Code executed successfully: ok"
                     assert success.content[1].type == "image"
                     assert success.content[1].data == "cG5n"
+                    tools = await session.list_tools()
+                    for name in ("execute_code", "execute_code_headless"):
+                        schema = next(t.inputSchema for t in tools.tools if t.name == name)
+                        assert "path" in schema["properties"]
+                        assert "code" not in schema.get("required", [])
+                        invalid = await session.call_tool(name, {"code": "pass", "path": "/unused.py"})
+                        assert _error(invalid)
+                        assert "exactly one" in invalid.content[0].text
+                    script = tmp_path / "model's file.FCMacro"
+                    script.write_text(
+                        "if __name__ == '__main__':\n    print('loaded:', __file__)\n",
+                        encoding="utf-8",
+                    )
+                    loaded = await session.call_tool(
+                        "execute_code_headless", {"path": str(script), "timeout": 10}
+                    )
+                    assert not _error(loaded)
+                    assert f"loaded: {script}" in loaded.content[0].text
+                    for source, error in [
+                        ("raise AssertionError('Base/Lid: collision 154.274 mm3')",
+                         "AssertionError: Base/Lid: collision 154.274 mm3"),
+                        ("def broken(:", "SyntaxError"),
+                    ]:
+                        script.write_text(source, encoding="utf-8")
+                        failed = await session.call_tool(
+                            "execute_code_headless", {"path": str(script), "timeout": 10}
+                        )
+                        assert _error(failed)
+                        assert error in failed.content[0].text
+                        assert str(script) in failed.content[0].text
+                        assert script.read_text(encoding="utf-8") == source
+                    script.unlink()
+                    missing = await session.call_tool(
+                        "execute_code_headless", {"path": str(script), "timeout": 10}
+                    )
+                    assert _error(missing)
+                    assert "accessible to FreeCAD" in missing.content[0].text
 
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("headless", [False, True])
+def test_path_runs_in_freecad_namespace(tmp_path, monkeypatch, headless) -> None:
+    script = tmp_path / "model's file.FCMacro"
+    script.write_bytes(b"# coding: latin-1\nif __name__ == '__main__':\n    result = base + 'caf\xe9'\n")
+    namespace = {"base": "FreeCAD: "}
+
+    def execute(code, *_args):
+        exec(code, namespace)
+        return {"success": True, "message": "ok"}
+
+    conn = _Connection()
+    monkeypatch.setattr(conn, "execute_code", execute)
+    monkeypatch.setattr(server, "get_freecad_connection", lambda: conn)
+    monkeypatch.setattr("freecad_mcp.headless.run_headless", execute)
+
+    def run():
+        if headless:
+            return server.execute_code_headless(None, path=str(script))
+        return server.execute_code(None, path=str(script), include_screenshot=False)
+
+    assert not _error(run())
+    assert namespace["result"] == "FreeCAD: café"
+    assert namespace["__file__"] == str(script)
+    script.write_text("result = 'updated'", encoding="utf-8")
+    assert not _error(run())
+    assert namespace["result"] == "updated"
+
+
+@pytest.mark.parametrize("arguments", [{}, {"code": "pass", "path": "/unused"}, {"code": " "}, {"path": " "}])
+def test_invalid_source_is_not_executed(arguments) -> None:
+    from freecad_mcp.operations.core import _load_code
+
+    with pytest.raises(ValueError):
+        _load_code(**{"code": None, "path": None, **arguments})
+
+
+def test_path_is_read_only_in_freecad_process(tmp_path) -> None:
+    from freecad_mcp.operations.core import _load_code
+
+    script = tmp_path / "late.py"
+    code = _load_code(None, str(script))  # Does not read the server filesystem.
+    script.write_text("value = 42", encoding="utf-8")
+    namespace = {}
+    exec(code, namespace)
+    assert namespace["value"] == 42
+
+
+@pytest.mark.parametrize("case", ["relative", "missing", "directory"])
+def test_inaccessible_path_is_rejected_in_freecad(tmp_path, case) -> None:
+    from freecad_mcp.operations.core import _load_code
+
+    path = {
+        "relative": "model.py",
+        "missing": str(tmp_path / "missing.py"),
+        "directory": str(tmp_path),
+    }[case]
+    with pytest.raises(ValueError, match="FreeCAD"):
+        exec(_load_code(None, path), {})
+
+
+def test_script_error_retains_filename(tmp_path) -> None:
+    from freecad_mcp.operations.core import _load_code
+
+    script = tmp_path / "broken.py"
+    script.write_text("raise ValueError('boom')", encoding="utf-8")
+    with pytest.raises(ValueError) as error:
+        exec(_load_code(None, str(script)), {})
+    assert error.traceback[-1].path == script
 
 
 if __name__ == "__main__":
     # Only FreeCAD is stubbed; the real MCP server and client use stdio.
     server.state.freecad_connection = _Connection()
     server.state.version_notice = "addon is old"
+    server.state.freecadcmd = [sys.executable]
     server.mcp.run()

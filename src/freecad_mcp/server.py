@@ -126,7 +126,12 @@ def get_freecad_connection() -> FreeCADConnection:
 
 
 @tool
-def execute_code_headless(ctx: Context, code: str, timeout: float = 600) -> list[TextContent]:
+def execute_code_headless(
+    ctx: Context,
+    code: str | None = None,
+    timeout: float = 600,
+    path: str | None = None,
+) -> list[TextContent]:
     """Run a FreeCAD Python script in a separate headless `freecadcmd` process.
 
     Use this for OCCT work that can crash or block FreeCAD: helical threads
@@ -144,23 +149,30 @@ def execute_code_headless(ctx: Context, code: str, timeout: float = 600) -> list
     the GUI, execute_code: App.closeDocument(name); App.openDocument(path).
 
     Args:
-        code: Complete Python script for freecadcmd.
+        code: Complete Python script. Provide exactly one of code or path.
         timeout: Positive finite seconds to wait before killing the process
             (default 600). Partial output is preserved on timeout.
+        path: Absolute path to a Python script or FCMacro, read directly by
+            freecadcmd on every call. The file MUST be readable by that process
+            on the MCP server machine, including inside any Flatpak/container
+            sandbox. A client-only path is not uploaded or copied. The script
+            runs with __file__ set to path and __name__='__main__'.
+            This saves sending long source through MCP, not modelling CPU time.
 
     Returns:
         Exit status, crash/timeout diagnosis and the script's printed output.
     """
-    return execute_code_headless_operation(state.freecadcmd, code, timeout)
+    return execute_code_headless_operation(state.freecadcmd, code, timeout, path)
 
 
 @tool
 def execute_code(
     ctx: Context,
-    code: str,
+    code: str | None = None,
     include_screenshot: bool = True,
     view_name: ViewName = "Isometric",
     timeout: float | None = None,
+    path: str | None = None,
 ) -> list[TextContent | ImageContent]:
     """Run Python in the FreeCAD GUI. This is THE modelling tool.
 
@@ -196,13 +208,23 @@ def execute_code(
     App.ActiveDocument.Objects, obj.Shape.Volume/BoundBox, obj.isValid().
 
     Args:
-        code: Python to run.
+        code: Python to run. Provide exactly one of code or path.
         include_screenshot: Return a screenshot (default True). Pass False
             for intermediate steps and queries; use get_view at the end.
         view_name: Screenshot orientation (default "Isometric").
         timeout: Seconds for each of the queue and run budgets (default 90,
             max 1800). Raise it for slow GUI work such as big STEP imports.
             Use execute_code_headless for OCCT work that may crash.
+        path: Absolute path to a Python script or FCMacro, read directly by
+            the FreeCAD GUI process on every call. The file MUST be readable
+            by the FreeCAD user on the machine selected by --host, including
+            inside any Flatpak/container sandbox. A path that exists only on
+            the client or MCP server is NOT enough: no file is uploaded or
+            copied. Use a shared/mounted path visible to FreeCAD, or send code.
+            The script uses the persistent namespace and helpers, with
+            __file__ set to path and __name__='__main__'. This saves source
+            transfer, not FreeCAD computation. Use include_screenshot=False
+            for intermediate calls to avoid screenshot overhead.
     """
     return execute_code_operation(
         get_freecad_connection(),
@@ -211,6 +233,7 @@ def execute_code(
         include_screenshot,
         view_name,
         timeout,
+        path,
     )
 
 

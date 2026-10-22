@@ -16,15 +16,39 @@ from ..version import addon_version_warning, is_missing_method_fault
 logger = logging.getLogger("FreeCADMCPserver")
 
 
+def _load_code(code: str | None, path: str | None) -> str:
+    if (code is None) == (path is None):
+        raise ValueError("provide exactly one of code or path")
+    if code is not None:
+        if not code.strip():
+            raise ValueError("code must not be empty")
+        return code
+    if not path or not path.strip():
+        raise ValueError("path must not be empty")
+    return (
+        "from pathlib import Path as _mcp_script_path\n"
+        f"_mcp_script_path = _mcp_script_path({path!r})\n"
+        "if not _mcp_script_path.is_absolute():\n"
+        "    raise ValueError('path must be absolute in the FreeCAD process filesystem')\n"
+        "if not _mcp_script_path.is_file():\n"
+        "    raise ValueError(f'path must be a regular file accessible to FreeCAD: {_mcp_script_path}')\n"
+        "__file__ = str(_mcp_script_path)\n"
+        "__name__ = '__main__'\n"
+        "exec(compile(_mcp_script_path.read_bytes(), __file__, 'exec'), globals())"
+    )
+
+
 def execute_code_operation(
     freecad: FreeCADConnection,
     only_text_feedback: bool,
-    code: str,
+    code: str | None = None,
     include_screenshot: bool = True,
     view_name: str = "Isometric",
     timeout: float | None = None,
+    path: str | None = None,
 ) -> ToolResponse:
     try:
+        code = _load_code(code, path)
         res = freecad.execute_code(code, timeout)
         if res["success"]:
             response = text_response(f"Code executed successfully: {res['message']}")
@@ -56,11 +80,12 @@ def format_headless_result(res: dict) -> str:
 
 
 def execute_code_headless_operation(
-    command: list[str] | None, code: str, timeout: float
+    command: list[str] | None, code: str | None, timeout: float, path: str | None = None
 ) -> ToolResponse:
     from ..headless import run_headless
 
     try:
+        code = _load_code(code, path)
         res = run_headless(code, timeout, command)
         respond = text_response if res.get("success") else error_response
         return respond(format_headless_result(res))
