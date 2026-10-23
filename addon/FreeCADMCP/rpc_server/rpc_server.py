@@ -59,7 +59,7 @@ def _err(res) -> dict:
 class FreeCADRPC:
     """RPC server for FreeCAD"""
     TIMEOUT = 60               # generous wait for GUI thread to become free
-    EXECUTE_CODE_TIMEOUT = 90  # GUI-thread execution; execute_code_headless runs heavy OCCT ops
+    EXECUTE_CODE_TIMEOUT = 90  # GUI-thread execution; use headless files for heavy OCCT ops
     # Ceiling for a caller-supplied execute_code timeout. A GUI task cannot be
     # cancelled once started, so an unbounded wait would hide a wedged GUI
     # thread from the caller indefinitely.
@@ -85,7 +85,7 @@ class FreeCADRPC:
 
         Runs on the GUI thread so that FreeCAD document operations
         (addObject, recompute, save) are safe and correctly ordered.
-        Use execute_code_headless for heavy OCCT work that may crash or
+        Use execute_file(headless=True) for heavy OCCT work that may crash or
         block the GUI thread too long.
 
         ``timeout`` overrides EXECUTE_CODE_TIMEOUT for this call only, capped at

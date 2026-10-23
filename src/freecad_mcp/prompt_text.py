@@ -1,5 +1,7 @@
 INSTRUCTIONS = """
-FreeCAD over MCP. Model parts the way a CAD user does, with execute_code.
+FreeCAD over MCP. Use execute_file for main scripts (GUI by default,
+headless=True for isolated work). Use execute_code for GUI live adjustments
+and inspection; it shares the GUI script namespace. Model like a CAD user.
 
 Workflow for every part:
 1. Read the request; pick the base plane and the first profile.
@@ -20,7 +22,7 @@ Rules:
   fix that step, and continue; do not rebuild everything.
 - include_screenshot=False for intermediate steps; get_view at the end.
 - Ask before guessing dimensions the user did not give.
-- execute_code_headless for OCCT work that may crash FreeCAD.
+- execute_file(headless=True) for OCCT work that may crash FreeCAD.
 - get_rpc_status when FreeCAD stops answering.
 
 The execute_code description lists the preloaded helpers and Sketcher API.

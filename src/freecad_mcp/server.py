@@ -126,60 +126,20 @@ def get_freecad_connection() -> FreeCADConnection:
 
 
 @tool
-def execute_code_headless(
-    ctx: Context,
-    code: str | None = None,
-    timeout: float = 600,
-    path: str | None = None,
-) -> list[TextContent]:
-    """Run a FreeCAD Python script in a separate headless `freecadcmd` process.
-
-    Use this for OCCT work that can crash or block FreeCAD: helical threads
-    (makeHelix + makePipeShell), lofts and sweeps, booleans with many or
-    B-spline tools, long parametric rebuilds. A native OpenCascade crash
-    here only kills the helper process; the GUI and its open documents
-    survive, and the tool reports the crash signal and the script's output.
-
-    The script runs on the MCP server machine, independently of --host, in a
-    fresh process without GUI: import FreeCAD/Part
-    yourself, open documents from disk (FreeCAD.openDocument(path)), save
-    results with doc.save()/saveAs() or Shape.exportBrep(). Nothing from the
-    execute_code namespace is available. Print progress to stdout; it is
-    returned when the process ends. To show a saved .FCStd that is open in
-    the GUI, execute_code: App.closeDocument(name); App.openDocument(path).
-
-    Args:
-        code: Complete Python script. Provide exactly one of code or path.
-        timeout: Positive finite seconds to wait before killing the process
-            (default 600). Partial output is preserved on timeout.
-        path: Absolute path to a Python script or FCMacro, read directly by
-            freecadcmd on every call. The file MUST be readable by that process
-            on the MCP server machine, including inside any Flatpak/container
-            sandbox. A client-only path is not uploaded or copied. The script
-            runs with __file__ set to path and __name__='__main__'.
-            This saves sending long source through MCP, not modelling CPU time.
-
-    Returns:
-        Exit status, crash/timeout diagnosis and the script's printed output.
-    """
-    return execute_code_headless_operation(state.freecadcmd, code, timeout, path)
-
-
-@tool
 def execute_code(
     ctx: Context,
-    code: str | None = None,
+    code: str,
     include_screenshot: bool = True,
     view_name: ViewName = "Isometric",
     timeout: float | None = None,
-    path: str | None = None,
 ) -> list[TextContent | ImageContent]:
-    """Run Python in the FreeCAD GUI. This is THE modelling tool.
+    """Run Python in the FreeCAD GUI for live adjustments and inspection.
 
     Model like a CAD user: Body -> sketch on a plane or face -> fully
     constrain it -> Pad/Pocket/Revolution -> next sketch. Never build parts
     from Part primitives or raw solids. One call per feature or small group
     of features; read the error, fix, continue.
+    Use execute_file for main scripts, in GUI or isolated headless mode.
 
     Preloaded (FreeCAD/App, FreeCADGui/Gui, Part, Sketcher, V=App.Vector,
     C=Sketcher.Constraint). Restore with `from rpc_server.cad import *`:
@@ -208,28 +168,69 @@ def execute_code(
     App.ActiveDocument.Objects, obj.Shape.Volume/BoundBox, obj.isValid().
 
     Args:
-        code: Python to run. Provide exactly one of code or path.
+        code: Python to run. Use execute_file to run an existing file.
         include_screenshot: Return a screenshot (default True). Pass False
             for intermediate steps and queries; use get_view at the end.
         view_name: Screenshot orientation (default "Isometric").
         timeout: Seconds for each of the queue and run budgets (default 90,
             max 1800). Raise it for slow GUI work such as big STEP imports.
-            Use execute_code_headless for OCCT work that may crash.
-        path: Absolute path to a Python script or FCMacro, read directly by
-            the FreeCAD GUI process on every call. The file MUST be readable
-            by the FreeCAD user on the machine selected by --host, including
-            inside any Flatpak/container sandbox. A path that exists only on
-            the client or MCP server is NOT enough: no file is uploaded or
-            copied. Use a shared/mounted path visible to FreeCAD, or send code.
-            The script uses the persistent namespace and helpers, with
-            __file__ set to path and __name__='__main__'. This saves source
-            transfer, not FreeCAD computation. Use include_screenshot=False
-            for intermediate calls to avoid screenshot overhead.
+            Use execute_file with headless=True for OCCT work that may crash.
     """
     return execute_code_operation(
         get_freecad_connection(),
         state.only_text_feedback,
         code,
+        include_screenshot,
+        view_name,
+        timeout,
+    )
+
+
+@tool
+def execute_file(
+    ctx: Context,
+    path: str,
+    headless: bool = False,
+    include_screenshot: bool = True,
+    view_name: ViewName = "Isometric",
+    timeout: float | None = None,
+) -> list[TextContent | ImageContent]:
+    """Run a main Python script or FCMacro from an absolute path.
+
+    The file is read on every call by the FreeCAD process, not uploaded or
+    copied. With headless=False it must be accessible to the GUI user on the
+    machine selected by --host, including inside any Flatpak/container sandbox.
+    With headless=True it must be accessible to freecadcmd on the MCP server
+    machine, independently of --host.
+
+    GUI execution shares execute_code's persistent namespace and CAD helpers.
+    Headless execution starts a fresh process without GUI or those helpers;
+    import FreeCAD/Part and save results yourself. Both set __file__ to path
+    and __name__ to '__main__'. This saves source transfer, not computation.
+
+    Args:
+        path: Absolute path to a Python script or FCMacro readable by FreeCAD.
+        headless: Use an isolated freecadcmd process (default False). Use True
+            for OCCT work that may crash or block the GUI.
+        include_screenshot: Return a screenshot after GUI success (default True).
+            Ignored when headless=True.
+        view_name: GUI screenshot orientation (default "Isometric").
+        timeout: Positive finite seconds. GUI: queue and run budgets, default
+            90, max 1800. Headless: process limit, default 600, kills the process
+            on timeout and preserves partial output.
+
+    Returns:
+        GUI execution output and optional screenshot, or headless exit status,
+        crash/timeout diagnosis and printed output.
+    """
+    if headless:
+        return execute_code_headless_operation(
+            state.freecadcmd, None, 600 if timeout is None else timeout, path
+        )
+    return execute_code_operation(
+        get_freecad_connection(),
+        state.only_text_feedback,
+        None,
         include_screenshot,
         view_name,
         timeout,
@@ -313,7 +314,7 @@ def main():
         "other users can read command-line arguments; omit if the addon has "
         "no token set)",
     )
-    parser.add_argument("--freecadcmd", default=None, help="Command that starts headless FreeCAD for execute_code_headless, e.g. 'flatpak run --command=freecadcmd org.freecad.FreeCAD' (default: auto-detect PATH, then Flatpak)")
+    parser.add_argument("--freecadcmd", default=None, help="Command that starts headless FreeCAD for execute_file(headless=True), e.g. 'flatpak run --command=freecadcmd org.freecad.FreeCAD' (default: auto-detect PATH, then Flatpak)")
     args = parser.parse_args()
     state.only_text_feedback = args.only_text_feedback
     state.rpc_host = args.host

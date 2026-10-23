@@ -111,6 +111,22 @@ def test_failed_headless_run_is_marked(monkeypatch: pytest.MonkeyPatch) -> None:
     assert not isinstance(execute_code_headless_operation(None, "pass", 10), ErrorResponse)
 
 
+@pytest.mark.parametrize("timeout", [None, 12, 0])
+def test_headless_file_does_not_connect_to_gui(monkeypatch, timeout) -> None:
+    from unittest.mock import Mock
+    from freecad_mcp import headless
+
+    connection = Mock(side_effect=AssertionError("headless must not connect to GUI"))
+    run = Mock(return_value={"success": True})
+    monkeypatch.setattr(server, "get_freecad_connection", connection)
+    monkeypatch.setattr(headless, "run_headless", run)
+    monkeypatch.setattr(server, "state", ServerState())
+    assert not _error(server.execute_file(None, "/model.py", headless=True, timeout=timeout))
+    connection.assert_not_called()
+    assert run.call_args.args[1:] == (600 if timeout is None else timeout, None)
+
+
+
 def test_stdio_client_receives_error_flags_and_original_content(tmp_path: Path) -> None:
     """Exercise SDK serialization, including MCP 1.x and 2.x normalization."""
     async def exercise() -> None:
@@ -143,20 +159,26 @@ def test_stdio_client_receives_error_flags_and_original_content(tmp_path: Path) 
                     assert success.content[1].type == "image"
                     assert success.content[1].data == "cG5n"
                     tools = await session.list_tools()
-                    for name in ("execute_code", "execute_code_headless"):
-                        schema = next(t.inputSchema for t in tools.tools if t.name == name)
-                        assert "path" in schema["properties"]
-                        assert "code" not in schema.get("required", [])
-                        invalid = await session.call_tool(name, {"code": "pass", "path": "/unused.py"})
-                        assert _error(invalid)
-                        assert "exactly one" in invalid.content[0].text
+                    assert "execute_code_headless" not in {t.name for t in tools.tools}
+                    schema = next(t.inputSchema for t in tools.tools if t.name == "execute_code")
+                    assert "path" not in schema["properties"]
+                    assert "headless" not in schema["properties"]
+                    assert "code" in schema["required"]
+                    invalid = await session.call_tool("execute_code", {})
+                    assert _error(invalid)
+                    schema = next(t.inputSchema for t in tools.tools if t.name == "execute_file")
+                    assert "path" in schema["required"]
+                    assert "code" not in schema["properties"]
+                    assert schema["properties"]["headless"]["default"] is False
+                    invalid = await session.call_tool("execute_file", {})
+                    assert _error(invalid)
                     script = tmp_path / "model's file.FCMacro"
                     script.write_text(
                         "if __name__ == '__main__':\n    print('loaded:', __file__)\n",
                         encoding="utf-8",
                     )
                     loaded = await session.call_tool(
-                        "execute_code_headless", {"path": str(script), "timeout": 10}
+                        "execute_file", {"path": str(script), "headless": True, "timeout": 10}
                     )
                     assert not _error(loaded)
                     assert f"loaded: {script}" in loaded.content[0].text
@@ -167,7 +189,7 @@ def test_stdio_client_receives_error_flags_and_original_content(tmp_path: Path) 
                     ]:
                         script.write_text(source, encoding="utf-8")
                         failed = await session.call_tool(
-                            "execute_code_headless", {"path": str(script), "timeout": 10}
+                            "execute_file", {"path": str(script), "headless": True, "timeout": 10}
                         )
                         assert _error(failed)
                         assert error in failed.content[0].text
@@ -175,7 +197,7 @@ def test_stdio_client_receives_error_flags_and_original_content(tmp_path: Path) 
                         assert script.read_text(encoding="utf-8") == source
                     script.unlink()
                     missing = await session.call_tool(
-                        "execute_code_headless", {"path": str(script), "timeout": 10}
+                        "execute_file", {"path": str(script), "headless": True, "timeout": 10}
                     )
                     assert _error(missing)
                     assert "accessible to FreeCAD" in missing.content[0].text
@@ -199,9 +221,9 @@ def test_path_runs_in_freecad_namespace(tmp_path, monkeypatch, headless) -> None
     monkeypatch.setattr("freecad_mcp.headless.run_headless", execute)
 
     def run():
-        if headless:
-            return server.execute_code_headless(None, path=str(script))
-        return server.execute_code(None, path=str(script), include_screenshot=False)
+        return server.execute_file(
+            None, str(script), headless=headless, include_screenshot=False
+        )
 
     assert not _error(run())
     assert namespace["result"] == "FreeCAD: café"
@@ -209,6 +231,9 @@ def test_path_runs_in_freecad_namespace(tmp_path, monkeypatch, headless) -> None
     script.write_text("result = 'updated'", encoding="utf-8")
     assert not _error(run())
     assert namespace["result"] == "updated"
+    if not headless:
+        assert not _error(server.execute_code(None, "result += ': live'", include_screenshot=False))
+        assert namespace["result"] == "updated: live"
 
 
 @pytest.mark.parametrize("arguments", [{}, {"code": "pass", "path": "/unused"}, {"code": " "}, {"path": " "}])
